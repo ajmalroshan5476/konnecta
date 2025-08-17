@@ -6,17 +6,19 @@ import multer from "multer";
 import s3 from "./s3.js";
 import path from "path";
 import crypto from "crypto";
-import cors from "cors"; // ✅ Add this
+import cors from "cors";
 
 dotenv.config();
 const app = express();
 
 // ✅ Enable CORS for REST API
-app.use(cors({
-  origin: "http://localhost:5173",
-  methods: ["GET", "POST", "PUT"],
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST", "PUT"],
+    credentials: true,
+  })
+);
 
 const server = createServer(app);
 
@@ -31,6 +33,7 @@ const io = new Server(server, {
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
+// ✅ Upload route with signed URL
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     const file = req.file;
@@ -46,12 +49,28 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       ContentType: file.mimetype,
     };
 
-    const data = await s3.upload(params).promise();
-    console.log(`✅ Uploaded to S3: ${data.Location}`);
+    // Upload (private by default)
+    await s3.upload(params).promise();
 
+    // Generate signed URL (valid 1 hour)
+    const signedUrl = s3.getSignedUrl("getObject", {
+      Bucket: process.env.AWS_BUCKET_NAME,
+      Key: fileName,
+      Expires: 60 * 60,
+    });
+
+    console.log(`✅ Uploaded to S3 (private). Signed URL: ${signedUrl}`);
+
+    // Tell frontend what type it is
+    const mediaType = file.mimetype.startsWith("video") ? "video" : "photo";
+
+    // Broadcast to all connected clients via socket
+    io.emit(mediaType, signedUrl);
+
+    // Respond back to uploader
     res.json({
-      url: data.Location,
-      type: file.mimetype.startsWith("video") ? "video" : "image"
+      url: signedUrl,
+      type: mediaType,
     });
   } catch (err) {
     console.error("❌ Error uploading file:", err);
@@ -64,17 +83,7 @@ io.on("connection", (client) => {
 
   client.on("message", (message) => {
     console.log("📩 Received text:", message);
-    io.emit("message", message);
-  });
-
-  client.on("photo", (url) => {
-    console.log("📩 Received photo URL:", url);
-    io.emit("photo", url);
-  });
-
-  client.on("video", (url) => {
-    console.log("📩 Received video URL:", url);
-    io.emit("video", url);
+    io.emit("message", message); // broadcast text
   });
 
   client.on("disconnect", () => {
@@ -82,9 +91,9 @@ io.on("connection", (client) => {
   });
 });
 
-
 server.listen(5000, () => {
   console.log("🚀 Server running on port 5000");
 });
+
 
 
